@@ -61,7 +61,7 @@ export interface GatewayError { status: number; type: string | null; code: strin
 // a 429 is a free-tier limit, missing credits, or provider capacity. Bodies are
 // untrusted and could echo request data, so only those two fields survive, the
 // credential and anything token-shaped are scrubbed, and both are length-capped.
-async function readGatewayError(response: Response, secret: string): Promise<GatewayError> {
+export async function readGatewayError(response: Response, secret: string): Promise<GatewayError> {
   const fallback = { status: response.status, type: null, code: null, message: null }
   try {
     const text = (await response.text()).slice(0, 8192)

@@ -10,10 +10,13 @@ import {
   logAuth, logAuthFailure, requestOrigin, SIGN_IN_UNAVAILABLE_PATH, FLOW_COOKIE_NAME, FLOW_COOKIE_OPTIONS, FLOW_TTL_SECONDS, TOKEN_ENDPOINT,
   isLoginId, SESSION_COOKIE_NAME, validOAuthFlow, validOAuthTokens, verifyVercelIdToken, type OAuthFlow,
 } from '@/lib/auth-protocol'
+import { selfHosted } from '@/lib/self-hosted'
 
 export async function GET(request: NextRequest) {
   // Read first: request data keeps this handler out of the build's prerender.
   const params = request.nextUrl.searchParams
+  // Self-hosted mode has no sign-in to complete.
+  if (selfHosted()) return NextResponse.redirect(new URL('/', requestOrigin(request)))
   let response: NextResponse
   let origin: string | undefined
   const sessionCookies: string[] = []

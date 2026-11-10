@@ -39,7 +39,8 @@ async function blockingPop(listKey: string, seconds: number, signal: AbortSignal
   try {
     const response = await fetch(url, {
       method: 'POST',
-      headers: { authorization: `Bearer ${token}` },
+      // Upstash accepts the request without a content type; other servers of its REST API don't.
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
       body: JSON.stringify(['BLPOP', listKey, String(seconds)]),
       signal: AbortSignal.any([signal, AbortSignal.timeout((seconds + 5) * 1000)]),
     })
@@ -924,7 +925,9 @@ export const answerCapture = (sessionId: string, cid: string, answer: CaptureAns
 // Upstash ends long requests on its own terms; waiting in slices keeps each one short. A
 // slice that fails is retried while the wait has time left, so one bad request does not
 // refuse a photo already on its way.
-const CAPTURE_BLOCK_SECONDS = 10
+// FX0_REDIS_BLOCK_SECONDS shortens it for a REST proxy that gives up on a command sooner
+// (docker-compose.yml's does after 5 seconds); the wait just takes more requests.
+const CAPTURE_BLOCK_SECONDS = Math.min(10, Math.max(1, Math.floor(Number(process.env.FX0_REDIS_BLOCK_SECONDS)) || 10))
 const CAPTURE_POP_ATTEMPTS = 3
 
 function replyFor(value: unknown, cid: string): { kind: 'ack' } | CaptureAnswer | null {

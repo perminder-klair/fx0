@@ -171,6 +171,24 @@ npm run dev
 
 `db:migrate` applies the files in `migrations/` in order. Each one is idempotent, so running it twice is fine. The app never migrates on its own.
 
+## Run it with Docker Compose
+
+[`docker-compose.yml`](docker-compose.yml) runs fx0 off Vercel, on your own OpenAI-compatible model provider, with no sign-in. It needs no Vercel account.
+
+```sh
+cp .env.docker.example .env   # set SESSION_SECRET, FX0_PROVIDER_BASE_URL, FX0_PROVIDER_API_KEY and FX0_MODEL
+docker compose up --build
+```
+
+Then open `http://localhost:3210`. `FX0_PORT` changes the port, and `APP_URL` the address when you reach the app by another host name. If your Compose can't build (`compose build requires buildx`), run `docker build -t fx0:local .` and then `docker compose up`.
+
+Setting `FX0_PROVIDER_BASE_URL` is what turns this mode on ([`lib/self-hosted.ts`](lib/self-hosted.ts)); it works outside Docker too. What changes:
+
+- **Models.** Requests go to `<FX0_PROVIDER_BASE_URL>/chat/completions` with `FX0_PROVIDER_API_KEY`, through libfx's custom provider. The model must support tool calls. The picker lists the server's `/models`, or `FX0_PROVIDER_MODELS`. There is no effort picker, fast mode or web search, which are AI Gateway's; `FX0_PROVIDER_REASONING_EFFORT` sends one `reasoning_effort` with every request instead. Set `FX0_PROVIDER_VISION=1` for models that take images; without it, a message with an attachment is refused.
+- **Sign-in.** There is none. Everyone who can reach the app is the same local user and spends the same provider key, so keep it on a trusted network or put your own authentication in front of it. `APP_URL` must be the address in the browser: requests from any other origin are refused.
+- **Storage.** Postgres and Redis run in the stack, behind two proxies that speak the HTTP APIs of fx0's Neon and Upstash clients ([local-neon-http-proxy](https://github.com/TimoWilhelm/local-neon-http-proxy) and [serverless-redis-http](https://github.com/hiett/serverless-redis-http)). libfx keeps its sessions as files in `FX_SESSIONS_DIR`, and attached images go to `FX0_ASSETS_DIR` instead of Vercel Blob; both are on the `fx0-data` volume.
+- **Durability.** A chat and its history survive a restart. There is no queue to wake a turn that was running when the container stopped, and libfx's file store is for one app container, so don't scale `app` beyond one.
+
 ## Deploy
 
 Set the same variables on Vercel. The Neon and Upstash integrations in the Vercel Marketplace fill in `DATABASE_URL`, `KV_REST_API_URL` and `KV_REST_API_TOKEN` for you. Set `APP_URL` to your production URL and add `<APP_URL>/api/auth/callback` to your Sign in with Vercel app.

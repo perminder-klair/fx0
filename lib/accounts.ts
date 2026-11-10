@@ -10,6 +10,8 @@ export interface AccountUser {
   email: string | null
   picture: string | null
   guest?: true
+  // Self-hosted mode's one account: there is nothing to sign out of or bill.
+  local?: true
 }
 
 export class AuthError extends Error {
@@ -41,7 +43,10 @@ export async function withAccountDatabase<T>(work: (query: AccountQuery) => Prom
   if (typeof window !== 'undefined') throw new Error('Accounts are server only')
   const connectionString = process.env.DATABASE_URL
   if (!connectionString) throw new Error('DATABASE_URL is required')
-  const { neon } = await import('@neondatabase/serverless')
+  const { neon, neonConfig } = await import('@neondatabase/serverless')
+  // A local Postgres behind a Neon HTTP proxy (docker-compose.yml) answers at its
+  // own address instead of the one the driver derives from a neon.tech hostname.
+  if (process.env.FX0_NEON_HTTP_ENDPOINT) neonConfig.fetchEndpoint = process.env.FX0_NEON_HTTP_ENDPOINT
   const sql = neon(connectionString)
   return work(async (text, values = []) => await sql.query(text, values,
     timeoutMs ? { fetchOptions: { signal: AbortSignal.timeout(timeoutMs) } } : undefined) as Record<string, unknown>[])

@@ -6,6 +6,8 @@ import { NextResponse, type NextRequest } from 'next/server.js'
 import { grantCookieName, isLoginId, SESSION_COOKIE_NAME, SESSION_TTL_SECONDS } from './auth-protocol.ts'
 // @ts-expect-error Node strip-types tests require the source extension.
 import { SIGN_OUT_PENDING_COOKIE } from './session-cookies.ts'
+// @ts-expect-error Node strip-types tests require the source extension.
+import { localSession, selfHosted } from './self-hosted.ts'
 
 export { grantCookieName, SESSION_COOKIE_NAME, SESSION_TTL_SECONDS }
 
@@ -24,6 +26,8 @@ export interface SessionData {
   teamId?: string
   teamSlug?: string
   isLoggedIn: boolean
+  // Self-hosted mode's one account (lib/self-hosted.ts): no OAuth grant behind it.
+  local?: true
 }
 
 export function getSessionOptions(): SessionOptions {
@@ -49,6 +53,8 @@ export const TEAM_COOKIE_NAME = 'fx0_team'
 interface TeamChoice { loginId: string; teamId: string; teamSlug: string }
 
 async function readSession(store: { get(name: string): { value: string } | undefined }, withTeamChoice = true, forSignOut = false): Promise<Partial<SessionData>> {
+  // Self-hosted mode has no sign-in: every request is the local account.
+  if (selfHosted()) return localSession()
   if (!forSignOut && store.get(SIGN_OUT_PENDING_COOKIE)?.value === '1') return {}
   const loginId = store.get(SESSION_COOKIE_NAME)?.value
   if (!isLoginId(loginId)) return {}

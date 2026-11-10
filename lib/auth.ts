@@ -20,7 +20,8 @@ export async function requireUserSession(): Promise<SessionData> {
 }
 
 export function publicUser(session: SessionData): AccountUser {
-  return { id: session.userId, name: session.name || session.email, email: session.email, picture: session.picture || null }
+  return { id: session.userId, name: session.name || session.email, email: session.email, picture: session.picture || null,
+    ...(session.local ? { local: true as const } : {}) }
 }
 
 export interface GrantedTeam { teamId: string; teamSlug: string }

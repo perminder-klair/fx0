@@ -1,4 +1,6 @@
 import { randomBytes } from 'node:crypto'
+import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import path from 'node:path'
 import type { del, get, list, put } from '@vercel/blob'
 import {
   MAX_CHAT_ASSETS, MAX_DAILY_ASSETS, finishDesignAssetCleanup, pendingDesignAssetCleanups,
@@ -22,11 +24,49 @@ export interface DesignAssetStore {
 // loads on the first Blob call: routes that import this module cold-start without it.
 let blob: Promise<typeof import('@vercel/blob')> | undefined
 const loadBlob = () => blob ??= import('@vercel/blob')
+// FX0_ASSETS_DIR keeps the images in a local directory instead (self-hosting, where
+// there is no Blob store): one file per pathname, which is `chats/<chat>/<handle>`.
+function fileStore(root: string): DesignAssetStore {
+  const file = (name: string) => {
+    const resolved = path.resolve(root, name)
+    if (!resolved.startsWith(path.resolve(root) + path.sep)) throw new Error('Invalid asset path')
+    return resolved
+  }
+  const store = {
+    async put(name: string, body: Buffer) {
+      await mkdir(path.dirname(file(name)), { recursive: true })
+      await writeFile(file(name), body)
+      return { pathname: name }
+    },
+    async get(name: string) {
+      try {
+        const bytes = await readFile(file(name))
+        return { statusCode: 200, stream: new Blob([new Uint8Array(bytes)]).stream() }
+      } catch { return null }
+    },
+    async del(names: string | string[]) {
+      await Promise.all([names].flat().map((name) => rm(file(name), { force: true })))
+    },
+    async list({ prefix = '' }: { prefix?: string } = {}) {
+      const names = await readdir(file(prefix)).catch(() => [] as string[])
+      return { blobs: names.map((name) => ({ pathname: `${prefix}${name}` })), hasMore: false }
+    },
+  }
+  // Only the calls and fields this module uses.
+  return store as unknown as DesignAssetStore
+}
+
+let files: DesignAssetStore | undefined
+async function backend(): Promise<DesignAssetStore> {
+  const root = process.env.FX0_ASSETS_DIR?.trim()
+  return root ? files ??= fileStore(root) : loadBlob()
+}
+
 const BLOB: DesignAssetStore = {
-  put: async (...args) => (await loadBlob()).put(...args),
-  get: async (...args) => (await loadBlob()).get(...args),
-  del: async (...args) => (await loadBlob()).del(...args),
-  list: async (...args) => (await loadBlob()).list(...args),
+  put: async (...args) => (await backend()).put(...args),
+  get: async (...args) => (await backend()).get(...args),
+  del: async (...args) => (await backend()).del(...args),
+  list: async (...args) => (await backend()).list(...args),
 }
 
 /** A message that would pass the per-chat or per-day image cap. Nothing was stored. */

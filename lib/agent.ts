@@ -18,6 +18,7 @@ import {
 } from './turn-credential'
 import type { TrialCredential } from './trial'
 import type { SessionData } from './secure-session'
+import { selfHosted } from './self-hosted'
 import {
   answerActiveQuestion,
   awaitCapture,
@@ -167,11 +168,12 @@ function capabilitySearch(host: SessionState, query: string) {
       kind: 'tool',
       description: (t.description ?? '').slice(0, 160),
     })),
-    {
+    // AI Gateway runs web search; a self-hosted provider has no such tool.
+    ...(selfHosted() ? [] : [{
       name: 'web_search',
       kind: 'tool',
       description: 'Gateway-executed public web search; no separate provider key required.',
-    },
+    }]),
   ]
   const words = query.toLowerCase().split(/\s+/).filter(Boolean)
   return catalog.filter((c) => words.some((w) => `${c.name} ${c.description}`.toLowerCase().includes(w))).slice(0, 10)

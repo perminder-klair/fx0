@@ -1,7 +1,9 @@
 import { readdir, readFile } from 'node:fs/promises'
-import { neon } from '@neondatabase/serverless'
+import { neon, neonConfig } from '@neondatabase/serverless'
 
 if (!process.env.DATABASE_URL) throw new Error('DATABASE_URL is required')
+// A local Postgres behind a Neon HTTP proxy (docker-compose.yml).
+if (process.env.FX0_NEON_HTTP_ENDPOINT) neonConfig.fetchEndpoint = process.env.FX0_NEON_HTTP_ENDPOINT
 const directory = new URL('../migrations/', import.meta.url)
 const files = (await readdir(directory)).filter((name) => /^\d{3}_.+\.sql$/.test(name)).sort()
 const sql = neon(process.env.DATABASE_URL)

@@ -1,5 +1,6 @@
 import { resolveGrantedTeam } from '../../../lib/auth'
 import { withUserRoute } from '../../../lib/route-auth'
+import { selfHosted } from '../../../lib/self-hosted'
 
 export const maxDuration = 30
 
@@ -10,6 +11,8 @@ function upstreamStatus(status: number): number {
 }
 
 export const GET = withUserRoute(async (_request, { session }) => {
+  // A self-hosted provider has no AI Gateway balance, and its session no Gateway token.
+  if (selfHosted()) return Response.json({ balance: null, totalUsed: 0, flexible: false })
   const { teamId } = await resolveGrantedTeam(session)
   const response = await fetch(`https://ai-gateway.vercel.sh/v1/credits?teamId=${encodeURIComponent(teamId)}`, {
     headers: { Authorization: `Bearer ${session.accessToken}` },

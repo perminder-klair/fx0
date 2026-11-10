@@ -1,6 +1,7 @@
 import { connection } from 'next/server.js'
 import { featuredModels } from '../../../lib/featured-models'
 import { DEFAULT_MODEL } from '../../../lib/session'
+import { selfHostedProvider } from '../../../lib/self-hosted'
 
 export const maxDuration = 60
 
@@ -24,9 +25,32 @@ let cache: { at: number; catalog: Omit<ModelCatalog, 'defaultModel'> } | null = 
 const SHARED = { headers: { 'cache-control': 'public, max-age=0, s-maxage=300, stale-while-revalidate=86400' } }
 const FAILED = { status: 502, headers: { 'cache-control': 'no-store' } }
 
+// A self-hosted provider's models: FX0_PROVIDER_MODELS when set, else the server's own
+// /models listing. Chat Completions has no effort or fast mode for the picker to offer.
+async function selfHostedCatalog(provider: NonNullable<ReturnType<typeof selfHostedProvider>>, defaultModel: string): Promise<Omit<ModelCatalog, 'defaultModel'>> {
+  let listed = provider.models
+  if (!listed.length) {
+    try {
+      const response = await fetch(`${provider.baseUrl}/models`, {
+        headers: provider.apiKey ? { authorization: `Bearer ${provider.apiKey}` } : {},
+        cache: 'no-store', signal: AbortSignal.timeout(15_000),
+      })
+      const payload = response.ok ? await response.json() as { data?: { id?: unknown }[] } : null
+      listed = (payload?.data ?? []).map((model) => model.id).filter((id): id is string => typeof id === 'string' && !!id)
+    } catch { /* The default model below is still usable. */ }
+  }
+  const models = [...new Set([defaultModel, ...listed])]
+  return { models, efforts: {}, fast: [], featured: models.slice(0, 8) }
+}
+
 export async function GET() {
   await connection()
   const defaultModel = process.env.FX0_MODEL ?? DEFAULT_MODEL
+  const provider = selfHostedProvider()
+  if (provider) {
+    if (!cache || Date.now() - cache.at >= 60_000) cache = { at: Date.now(), catalog: await selfHostedCatalog(provider, defaultModel) }
+    return Response.json({ ...cache.catalog, defaultModel }, { headers: { 'cache-control': 'no-store' } })
+  }
   if (cache && Date.now() - cache.at < 5 * 60_000) {
     return Response.json({ ...cache.catalog, defaultModel }, SHARED)
   }

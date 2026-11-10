@@ -14,6 +14,7 @@ export interface AccountUser {
   email: string | null
   picture: string | null
   guest?: true
+  local?: true
 }
 
 // Balances come with the team listing (cached for minutes); the checked team's is
@@ -45,12 +46,14 @@ export default function AccountMenu({ user, team = null, onSignOut, signOutStatu
   const [teams, setTeams] = useState<TeamOption[] | null>(null)
   const [switching, setSwitching] = useState<string | null>(null)
   const [error, setError] = useState('')
-  const credits = useCredits(user?.id ?? null, team)
+  // Self-hosted mode has one local account: no sign-in, team or balance to show.
+  const local = !!user?.local
+  const credits = useCredits(local ? null : user?.id ?? null, team)
   const balance = credits?.flexible ? 'flex' : formatBalance(credits?.balance)
 
   // Each listing probes every team against Gateway, so it is prefetched once per
   // page and cached per user; the menu then opens complete instead of growing.
-  const teamsKey = user ? `fx0:cache:teams:v4:${user.id}` : null
+  const teamsKey = user && !local ? `fx0:cache:teams:v4:${user.id}` : null
   useEffect(() => {
     if (!teamsKey) return
     type Listing = { teams?: TeamOption[] }
@@ -96,6 +99,7 @@ export default function AccountMenu({ user, team = null, onSignOut, signOutStatu
     </>
   )
 
+  if (local) return null
   if (!user) return signIn()
 
   return (

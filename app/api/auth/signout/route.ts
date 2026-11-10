@@ -6,8 +6,11 @@ import { assertSameOrigin, logAuth, FLOW_COOKIE_NAME, FLOW_COOKIE_OPTIONS, isLog
 import { getSessionForSignOut, sealSessionCookie, selectorCookie } from '@/lib/secure-session'
 import { signedInHintCookie, signOutPendingCookie } from '@/lib/session-cookies'
 import { revokeLoginCredentials } from '@/lib/turn-credential'
+import { selfHosted } from '@/lib/self-hosted'
 
 export async function POST(request: NextRequest) {
+  // The local account has no login to end: revoking it would lock everyone out for good.
+  if (selfHosted()) return NextResponse.json({ error: 'Sign-out is unavailable when self-hosted' }, { status: 404 })
   try {
     assertSameOrigin(request)
   } catch (error) {

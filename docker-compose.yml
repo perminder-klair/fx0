@@ -1,0 +1,105 @@
+# fx0 on your own machine, with your own OpenAI-compatible model provider and no
+# sign-in. Copy .env.docker.example to .env, fill it in, then: docker compose up --build
+#
+# Postgres and Redis run here; the two proxies give them the HTTP APIs fx0's Neon and
+# Upstash clients speak. Nothing but the app is published to the host.
+services:
+  app:
+    build: .
+    image: fx0:local
+    restart: unless-stopped
+    ports:
+      - "${FX0_PORT:-3210}:3000"
+    environment:
+      # The address you open in the browser. Requests from any other origin are refused.
+      APP_URL: ${APP_URL:-http://localhost:${FX0_PORT:-3210}}
+      SESSION_SECRET: ${SESSION_SECRET:?set SESSION_SECRET in .env (32+ random characters)}
+      FX0_PROVIDER_BASE_URL: ${FX0_PROVIDER_BASE_URL:?set FX0_PROVIDER_BASE_URL in .env}
+      FX0_PROVIDER_API_KEY: ${FX0_PROVIDER_API_KEY:-}
+      FX0_MODEL: ${FX0_MODEL:?set FX0_MODEL in .env}
+      FX0_PROVIDER_MODELS: ${FX0_PROVIDER_MODELS:-}
+      FX0_PROVIDER_CONTEXT_WINDOW: ${FX0_PROVIDER_CONTEXT_WINDOW:-}
+      FX0_PROVIDER_MAX_OUTPUT_TOKENS: ${FX0_PROVIDER_MAX_OUTPUT_TOKENS:-}
+      FX0_PROVIDER_VISION: ${FX0_PROVIDER_VISION:-}
+      FX0_PROVIDER_REASONING_EFFORT: ${FX0_PROVIDER_REASONING_EFFORT:-}
+      FX0_LOCAL_USER_NAME: ${FX0_LOCAL_USER_NAME:-}
+      FX0_REMOTE_IMAGES: ${FX0_REMOTE_IMAGES:-}
+      DATABASE_URL: &database-url postgres://postgres:postgres@db.localtest.me:5432/fx0
+      FX0_NEON_HTTP_ENDPOINT: &neon-endpoint http://neon-proxy:4444/sql
+      KV_REST_API_URL: http://redis-rest:80
+      KV_REST_API_TOKEN: fx0-local
+      # redis-rest gives up on a command after 5 seconds.
+      FX0_REDIS_BLOCK_SECONDS: "3"
+    volumes:
+      - fx0-data:/data
+    extra_hosts:
+      # So a provider running on the Docker host is reachable as host.docker.internal.
+      - "host.docker.internal:host-gateway"
+    depends_on:
+      migrate:
+        condition: service_completed_successfully
+      redis-rest:
+        condition: service_started
+
+  # Applies migrations/ once per start; every file is idempotent.
+  migrate:
+    build: .
+    image: fx0:local
+    restart: "no"
+    command: ["node", "scripts/migrate-database.mjs"]
+    environment:
+      DATABASE_URL: *database-url
+      FX0_NEON_HTTP_ENDPOINT: *neon-endpoint
+    depends_on:
+      neon-proxy:
+        condition: service_started
+      postgres:
+        condition: service_healthy
+
+  postgres:
+    image: postgres:17
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: postgres
+      POSTGRES_PASSWORD: postgres
+      POSTGRES_DB: fx0
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U postgres -d fx0"]
+      interval: 3s
+      timeout: 3s
+      retries: 20
+
+  # Neon's HTTP query API in front of the local Postgres.
+  neon-proxy:
+    image: ghcr.io/timowilhelm/local-neon-http-proxy:main
+    restart: unless-stopped
+    environment:
+      PG_CONNECTION_STRING: postgres://postgres:postgres@postgres:5432/fx0
+    depends_on:
+      postgres:
+        condition: service_healthy
+
+  redis:
+    image: redis:7
+    restart: unless-stopped
+    command: ["redis-server", "--appendonly", "yes"]
+    volumes:
+      - redis-data:/data
+
+  # Upstash's REST API in front of the local Redis.
+  redis-rest:
+    image: hiett/serverless-redis-http:latest
+    restart: unless-stopped
+    environment:
+      SRH_MODE: env
+      SRH_TOKEN: fx0-local
+      SRH_CONNECTION_STRING: redis://redis:6379
+    depends_on:
+      - redis
+
+volumes:
+  fx0-data:
+  postgres-data:
+  redis-data:

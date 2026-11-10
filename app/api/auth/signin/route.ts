@@ -2,9 +2,12 @@ import { sealData } from 'iron-session'
 import { NextResponse, type NextRequest } from 'next/server'
 import { randomHandle, pkceChallenge } from '@/lib/auth-crypto'
 import { getSessionOptions } from '@/lib/secure-session'
+import { selfHosted } from '@/lib/self-hosted'
 import { logAuthFailure, requestOrigin, SIGN_IN_UNAVAILABLE_PATH, FLOW_COOKIE_NAME, FLOW_COOKIE_OPTIONS, FLOW_TTL_SECONDS, type OAuthFlow } from '@/lib/auth-protocol'
 
 export async function GET(request: NextRequest) {
+  // Self-hosted mode has no sign-in; APP_URL is the only trusted redirect target.
+  if (selfHosted()) return NextResponse.redirect(new URL('/', requestOrigin(request)))
   // Read first: request data keeps this handler out of the build's prerender.
   const reauth = request.nextUrl.searchParams.get('reauth') === 'true'
   try {

@@ -3,6 +3,8 @@ import { createRemoteJWKSet, jwtVerify, type JWTVerifyGetKey } from 'jose'
 import { equalSecret, redactSecrets } from './auth-crypto.ts'
 // @ts-expect-error Node strip-types tests require the source extension.
 import { AuthError } from './accounts.ts'
+// @ts-expect-error Node strip-types tests require the source extension.
+import { selfHosted } from './self-hosted.ts'
 
 // Requests can run for 800s. Leave 100s for dispatch/clock overhead so a token
 // accepted by the Gateway transport can cover an entire request.
@@ -58,7 +60,8 @@ function appOrigin(appUrl = process.env.APP_URL): string {
   if (!appUrl) throw new Error('APP_URL is required')
   const url = new URL(appUrl)
   if (url.username || url.password || (url.protocol !== 'https:' &&
-      !(process.env.NODE_ENV !== 'production' && url.protocol === 'http:'))) {
+      // A self-hosted app is often plain HTTP on a private network.
+      !((process.env.NODE_ENV !== 'production' || selfHosted()) && url.protocol === 'http:'))) {
     throw new Error('APP_URL must be a trusted HTTP(S) origin')
   }
   return url.origin

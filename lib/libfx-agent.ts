@@ -12,6 +12,9 @@ import { bindLibfxSession, chatOfLibfxSession, getActiveTurn } from './journal'
 import { createDraftContext } from './draft-context'
 import { closeDraftCall, storedDraftObserver } from './draft-store'
 import { turnBudget } from './turn-budget'
+import { providerFetch, sessionMarker, takeSessionMarker } from './provider-session'
+// @ts-expect-error Node strip-types tests require the source extension.
+import { PROVIDER_NAME, PROVIDER_PLACEHOLDER_URL, selfHosted, selfHostedModel, selfHostedProvider } from './self-hosted.ts'
 import {
   DEFAULT_MODEL,
   MAX_TURN_MODEL_STEPS,
@@ -43,8 +46,15 @@ export interface ChatRuntime {
 // Which model request of a turn this is: who sent it, and the conversation it
 // carries. A retry or a crash's resend of a step carries the same conversation, so
 // it has the same name; every new step, even after compaction, has a new one.
+// The conversation a model request carries: AI Gateway's `prompt`, or the `messages`
+// of a Chat Completions request to a self-hosted provider.
+function conversation(body: unknown): unknown {
+  const request = body as { prompt?: unknown; messages?: unknown } | null
+  return request?.prompt ?? request?.messages
+}
+
 export function modelStepName(sender: string, body: unknown): string {
-  const prompt = (body as { prompt?: unknown } | null)?.prompt
+  const prompt = conversation(body)
   // An unreadable conversation counts as a step of its own, never as a resend.
   if (!Array.isArray(prompt)) return `${sender}:unread:${randomUUID()}`
   return `${sender}:${createHash('sha256').update(JSON.stringify(prompt)).digest('base64url').slice(0, 22)}`
@@ -64,7 +74,7 @@ function requestJson(body: unknown): unknown {
 // last user message, plus this one. It needs no state, so it holds even where the
 // turn's shared budget (turn-budget.ts) is unknown or lost.
 export function turnModelStep(body: unknown): number {
-  const prompt = (body as { prompt?: unknown })?.prompt
+  const prompt = conversation(body)
   if (!Array.isArray(prompt)) return 1
   let steps = 1
   for (let index = prompt.length - 1; index >= 0; index--) {
@@ -108,7 +118,8 @@ function chatFetch(
     const id = await chatId()
     const url = new URL(input instanceof Request ? input.url : String(input))
     const method = (init?.method ?? (input instanceof Request ? input.method : 'GET')).toUpperCase()
-    const modelRequest = method === 'POST' && url.pathname.endsWith('/language-model')
+    const local = selfHosted()
+    const modelRequest = method === 'POST' && url.pathname.endsWith(local ? '/chat/completions' : '/language-model')
     const body = modelRequest ? requestJson(init?.body) : null
     const limited = () => {
       log(id ?? 'unknown', 'turn:step-limit', { steps: MAX_TURN_MODEL_STEPS, sender: sender === 'parent' ? 'parent' : 'subagent' })
@@ -124,18 +135,20 @@ function chatFetch(
       // All three use the same executing turn; reserving its preview and its step adds
       // no serial round trip to the funding lookup before the model request starts.
       const [funding, draft, steps] = await Promise.all([
-        readExecutionFunding(id, turn),
+        // A self-hosted provider is paid with the server's own key, not a stored grant.
+        local ? null : readExecutionFunding(id, turn),
         turn && modelRequest ? storedDraftObserver(id, turn).catch(() => undefined) : undefined,
         turn && modelRequest ? turnBudget().reserve(id, turn, modelStepName(sender, body)) : 0,
       ])
       if (steps > MAX_TURN_MODEL_STEPS) return limited()
       // The request fails below with "sign in again"; the log says why, with
       // the turn and reason only, never a credential.
-      if (!funding.ok && modelRequest) log(id, 'funding:refused', { turn: turn ?? null, reason: funding.refused })
-      const credential = funding.ok ? funding.credential : null
+      if (funding && !funding.ok && modelRequest) log(id, 'funding:refused', { turn: turn ?? null, reason: funding.refused })
+      const credential = funding?.ok ? funding.credential : null
       gateway.gatewaySession = !credential ? null : 'kind' in credential ? credential : { ...credential, email: '', loginAt: 0, isLoggedIn: true }
       observer = modelRequest && watchDraft ? watchDraft(draft) : draft
     }
+    if (local) return providerFetch(gateway, fetch, modelRequest ? observer : undefined)(input, init)
     try {
       return await gatewayFetch(gateway, fetch, observer)(input, init)
     } catch (error) {
@@ -214,31 +227,58 @@ export function durableAgent(runtime: ChatRuntime, instructions: string): FxAgen
 
     // Placeholder: chatFetch sets each request's credential, and fx0 never uses
     // libfx's environment or OIDC fallback.
-    apiKey: 'session-authenticated',
+    ...providerOptions(),
     fetch: (input, init) => {
-      const id = requestHeader(input, init, 'x-session-id')
-      return chatFetch(() => chatOfRequest(id), () => drafts.turn(id), 'parent', runtime.watchDraft)(input, init)
+      const marked = selfHosted() ? takeSessionMarker(init) : null
+      const id = marked ? marked.sessionId : requestHeader(input, init, 'x-session-id')
+      return chatFetch(() => chatOfRequest(id), () => drafts.turn(id), 'parent', runtime.watchDraft)(input, marked ? marked.init : init)
     },
     onEvent: event => drafts.observe(event),
     // Hooks run synchronously before a restored engine starts its next request.
     hooks: { onEvent: event => drafts.observe(event) },
-    model: DEFAULT_MODEL,
+    model: selfHosted() ? selfHostedModel() : DEFAULT_MODEL,
     instructions,
-    tools: [...chatTools(runtime, true), { name: 'web_search', providerExecuted: true }],
+    tools: [...chatTools(runtime, true), ...WEB_SEARCH()],
   })
   return g.__fx0LibfxAgent
 }
 
+// AI Gateway runs web search itself; a self-hosted provider has no such tool.
+const WEB_SEARCH = () => selfHosted() ? [] : [{ name: 'web_search' as const, providerExecuted: true as const }]
+
+// Where model requests go: AI Gateway with a placeholder key (chatFetch sets each
+// request's credential, and fx0 never uses libfx's environment or OIDC fallback), or
+// the self-hosted provider, whose key chatFetch adds too.
+function providerOptions() {
+  const provider = selfHostedProvider()
+  if (!provider) return { apiKey: 'session-authenticated' }
+  const limits = {
+    ...(provider.contextWindow ? { contextWindow: provider.contextWindow } : {}),
+    ...(provider.maxOutputTokens ? { maxOutputTokens: provider.maxOutputTokens } : {}),
+    supportsToolUse: true,
+    supportsVision: provider.vision,
+  }
+  const ids = [...new Set([selfHostedModel(), ...provider.models])]
+  return {
+    provider: { name: PROVIDER_NAME, baseUrl: PROVIDER_PLACEHOLDER_URL, models: Object.fromEntries(ids.map((id) => [id, limits])) },
+  }
+}
+
+// libfx refuses an effort or fast mode for a custom provider's models.
+function modelChoice(id: string, effort: string, fast: boolean) {
+  return selfHosted() ? { id } : { id, effort: effort as FxEffort, fast }
+}
+
 function chatModel(host: SessionState, sponsored = false) {
   if (sponsored) return { id: TRIAL_MODEL, effort: 'low' as FxEffort, fast: true }
-  return { id: effectiveModel(host), effort: effectiveEffort(host) as FxEffort, fast: effectiveFast(host) }
+  return modelChoice(effectiveModel(host), effectiveEffort(host), effectiveFast(host))
 }
 
 // The chat's settings for the turns its next prompts start.
-export function chatSessionOptions(host: SessionState, instructions: string, turnId: number, sponsored = false) {
+export function chatSessionOptions(host: SessionState, instructions: string, turnId: number, sponsored = false, libfxSessionId?: string) {
   return {
     model: chatModel(host, sponsored),
-    instructions,
+    instructions: selfHosted() && libfxSessionId ? instructions + sessionMarker(libfxSessionId) : instructions,
     context: { chatId: host.id, turnId } satisfies TurnContext,
   }
 }
@@ -254,7 +294,7 @@ export async function chatSession(
 ): Promise<{ session: FxSession; libfxSessionId: string }> {
   const id = libfxSessionId ?? await bindLibfxSession(host.id, await agent.newSessionId())
   libfxChats.set(id, host.id)
-  return { session: agent.session(id, chatSessionOptions(host, instructions, turnId, sponsored)), libfxSessionId: id }
+  return { session: agent.session(id, chatSessionOptions(host, instructions, turnId, sponsored, id)), libfxSessionId: id }
 }
 
 // A subagent is an ordinary in-memory engine inside its tool call, billed to the
@@ -274,10 +314,10 @@ export async function runSubagent(
   // The parent turn's settings, even if the chat's were changed since it started.
   const pinned = active?.id === turnId ? active.settings : undefined
   const engine = await createFxEngine({
-    apiKey: 'session-authenticated',
+    ...providerOptions(),
     fetch: chatFetch(async () => chatId, () => turnId, `subagent:${crypto.randomUUID()}`, runtime.watchDraft),
     model: pinned
-      ? { id: pinned.model, effort: pinned.effort as FxEffort, fast: pinned.fast }
+      ? modelChoice(pinned.model, pinned.effort, pinned.fast)
       : chatModel(host, funding.ok && 'kind' in funding.credential),
     instructions,
     tools: [
@@ -289,7 +329,7 @@ export async function runSubagent(
           }
         },
       })),
-      { name: 'web_search', providerExecuted: true },
+      ...WEB_SEARCH(),
     ],
   })
   try {
